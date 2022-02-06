@@ -2,32 +2,42 @@ import time
 import requests
 import pandas as pd
 from wool import Wool
+from website import Website
+from container import Container
 from sqlalchemy import create_engine
 from bs4 import BeautifulSoup
 from flask import Flask, render_template
 
-app = Flask('Flask App')
+app = Flask('Wool App')
 engine = create_engine('sqlite:///result_data.db')
 
-base_url = "https://www.wollplatz.de/wolle"
-pagination_url = "https://www.wollplatz.de/wolle?page="
 delivery_url = 'https://www.wollplatz.de/versandkosten-und-lieferung'
 wool_json = pd.read_json('wool_data.json')
 wool_df = pd.DataFrame(wool_json)
-product_links = []
-data = []
 
 wool_item = Wool()
 
+price_container = Container('span', 'class', 'product-price-amount')
+needle_size_container = Container('td', 'string', 'Nadelstärke')
+composition_container = Container('td', 'string', 'Zusammenstellung')
 
-def get_product_links():
+website_1 = Website("https://www.wollplatz.de/wolle", "https://www.wollplatz.de/wolle?page=", 28, price_container,
+                    needle_size_container, composition_container)
+website_2 = Website("https://www.wollplatz.de/wolle", "https://www.wollplatz.de/wolle?page=", 20, price_container,
+                    needle_size_container, composition_container)
+
+product_links = []
+
+
+def get_product_links(website):
     print('Collecting product links...')
     start_time = time.time()
-    for i in range(1, 29):
+
+    for i in range(1, website.page_num + 1):
         if i == 1:
-            url = base_url
+            url = website.base_url
         else:
-            url = pagination_url + str(i)
+            url = website.pagination_url + str(i)
 
         soup = get_soup(url)
 
@@ -39,35 +49,44 @@ def get_product_links():
                 link = item.get('href')
                 product_links.append(link)
 
-        if i == 28:
-            print("\nThis took %s seconds." % (time.time() - start_time))
+        if i == website.page_num:
+            print_time(start_time)
             print('-' * 40)
             get_product_data(product_links)
 
 
 def get_product_data(urls):
+    data = []
     print('Collecting product data...')
     start_time = time.time()
     for url in urls:
         soup = get_soup(url)
 
-        delivery = soup.find("div", id="ContentPlaceHolder1_upStockInfoDescription").findNext('span').contents[0]
-        properties_table = soup.find("div", id="pdetailTableSpecs")
+        delivery = get_delivery_info(soup)
+        properties_table = get_properties_table(soup)
 
         wool_item.get_name(url, wool_df)
-        wool_item.get_price(soup)
+        wool_item.get_price(soup, price_container)
         wool_item.get_delivery_time(get_soup(delivery_url), delivery)
-        wool_item.get_needle_size(properties_table)
-        wool_item.get_composition(properties_table)
+        wool_item.get_needle_size(properties_table, needle_size_container)
+        wool_item.get_composition(properties_table, composition_container)
 
         data.append(Wool(wool_item.name, wool_item.price, wool_item.delivery_time, wool_item.needle_size,
                          wool_item.composition))
 
     df = pd.DataFrame([vars(w) for w in data])
 
-    print("\nThis took %s seconds." % (time.time() - start_time))
+    print_time(start_time)
     print('-' * 40)
     save_results(df)
+
+
+def get_properties_table(soup):
+    return soup.find("div", id="pdetailTableSpecs")
+
+
+def get_delivery_info(soup):
+    return soup.find("div", id="ContentPlaceHolder1_upStockInfoDescription").findNext('span').contents[0]
 
 
 def get_soup(url):
@@ -90,13 +109,17 @@ def save_results(df):
     # save to db
     result.to_sql('result_data', engine, if_exists='replace')
 
-    print("\nThis took %s seconds." % (time.time() - start_time))
+    print_time(start_time)
     print('-' * 40)
-    # run flask app
-    run_app(result)
 
 
-def run_app(df):
+def print_time(start):
+    print("\nThis took %s seconds." % int((time.time() - start)))
+
+
+def run_app():
+    df = pd.read_json('result_data.json')
+
     @app.route('/')
     def index():
         return render_template('index.html', tables=[df.to_html(classes='data')], titles=df.columns.values)
@@ -106,11 +129,16 @@ def run_app(df):
 
 
 def main():
-    print('Hello! Let\'s explore some information from {} website for the following items:'.format(base_url))
-    for x in range(len(wool_df)):
-        print(wool_df.brand[x] + ' ' + wool_df.name[x])
-    print('-' * 40)
-    get_product_links()
+    for website in Website.instances:
+        print(
+            'Let\'s explore some information from {} website for the following items:'.format(website.base_url))
+        for x in range(len(wool_df)):
+            print(wool_df.brand[x] + ' ' + wool_df.name[x])
+        print('-' * 40)
+        get_product_links(website)
+
+    # run flask app
+    run_app()
 
 
 if __name__ == "__main__":
